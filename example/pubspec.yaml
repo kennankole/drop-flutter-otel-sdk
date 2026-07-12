@@ -1,0 +1,24 @@
+name: drop_observability_example
+description: >
+  Minimal app proving drop_observability's init() + a Dio call work
+  end-to-end. See OTEL_LIBRARY_PLAN.md §4.
+publish_to: none
+version: 0.0.1
+
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dio: ^5.9.1
+  drop_observability:
+    path: ../
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
