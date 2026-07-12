@@ -10,8 +10,8 @@ This repo is named `drop-flutter-otel-sdk`; the Dart package inside it is `drop_
 
 ## Status
 
-L0 (SDK spike), L1 (scaffold + no-op core), and L2 (tracing + Dio) complete.
-L3 (errors) not yet started.
+L0 (SDK spike), L1 (scaffold + no-op core), L2 (tracing + Dio), and L3
+(errors) complete. L4 (logs) not yet started.
 
 ## L0 — SDK Spike Decision
 

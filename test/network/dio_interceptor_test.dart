@@ -162,4 +162,7 @@ class _CapturingTracing implements DropTracing {
 
   @override
   void forceFlush() {}
+
+  @override
+  DropSpanContext? get activeContext => null;
 }
