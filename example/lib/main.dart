@@ -2,14 +2,32 @@ import 'package:dio/dio.dart';
 import 'package:drop_observability/drop_observability.dart';
 import 'package:flutter/material.dart';
 
+/// Off by default (design principle 2). To verify spans actually reach a
+/// local collector (L2 acceptance criterion), run:
+///   docker compose up -d          # from example/, starts otelcol on :4318
+///   flutter run -d linux --dart-define=OTEL_ENABLED=true
+class _ExampleGates implements ObservabilityGates {
+  const _ExampleGates();
+
+  @override
+  bool get otelEnabled => const bool.fromEnvironment('OTEL_ENABLED');
+
+  @override
+  double get traceSampleRate => 1.0;
+
+  @override
+  bool get logsEnabled => false;
+}
+
 Future<void> main() async {
   final obs = await DropObservability.init(
     const ObservabilityConfig(
       serviceName: 'drop_observability_example',
       environment: 'development',
       serviceVersion: '0.0.1',
-      // otlpEndpoint / sentryDsn / gates all omitted: everything no-ops
-      // (design principle 2) until L2+ wire in real backends.
+      otlpEndpoint: 'http://localhost:4318/v1/traces',
+      gates: _ExampleGates(),
+      // sentryDsn omitted: crash reporting stays no-op until L3.
     ),
   );
 
@@ -65,6 +83,10 @@ class _ExampleHomePageState extends State<ExampleHomePage> {
       await widget.obs.crashReporter.recordError(error, stackTrace);
       span.end(status: DropSpanStatus.error);
       setState(() => _status = 'Fetch failed (see crashReporter)');
+    } finally {
+      // L5 wires this into a pause hook; forced here so manual collector
+      // verification doesn't have to wait out the batch timer.
+      widget.obs.tracing.forceFlush();
     }
   }
 
