@@ -1,9 +1,11 @@
+import 'package:flutter/widgets.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 import 'config.dart';
 import 'errors/crash_reporter.dart';
 import 'errors/noise_filter.dart';
 import 'errors/sentry_crash_reporter.dart';
+import 'export/flush_on_pause_observer.dart';
 import 'logging/logger.dart';
 import 'logging/ring_buffer.dart';
 import 'network/dio_interceptor.dart';
@@ -34,11 +36,19 @@ class DropObservability {
   /// `otlpEndpoint` is configured — otherwise it stays [NoopDropTracing].
   /// Crash reporting goes real (L3) only when `sentryDsn` is non-empty —
   /// otherwise it stays [NoopCrashReporter] and `SentryFlutter.init()` is
-  /// never even called. Both match design principle 2. Logging and export
-  /// policy stay no-op/local-only until L4/L5.
+  /// never even called. Both match design principle 2. A
+  /// [FlushOnPauseObserver] is always registered (harmless no-op when
+  /// tracing is a [NoopDropTracing]) so telemetry survives the app being
+  /// backgrounded (L5). Logging stays local-only — L4 (real OTEL log
+  /// export) was investigated and descoped; see README.md.
   static Future<DropObservability> init(ObservabilityConfig config) async {
+    WidgetsFlutterBinding.ensureInitialized();
+
     final tracing = _buildTracing(config);
     final ringBuffer = LogRingBuffer();
+
+    WidgetsBinding.instance.addObserver(FlushOnPauseObserver(tracing));
+
     return DropObservability._(
       config: config,
       tracing: tracing,
@@ -60,6 +70,7 @@ class DropObservability {
         environment: config.environment,
         serviceVersion: config.serviceVersion,
       ),
+      tokenProvider: config.tokenProvider,
     );
   }
 

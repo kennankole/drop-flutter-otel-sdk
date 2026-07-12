@@ -17,6 +17,9 @@ dependencies:
   # Pinned exactly (no caret) — pre-1.0 minors are breaking. See README.md's
   # L0 decision. Chosen over dartastic_opentelemetry.
   opentelemetry: 0.18.11
+  # Already a transitive dep of opentelemetry; explicit here since
+  # export/otlp_client.dart imports it directly (Bearer-auth http.Client).
+  http: ^1.6.0
   # Matches the version already identical across drop-mobile/drop-rider/
   # drop-admin-mobile — the package takes over ownership of this dependency
   # entirely at L6/L7 adoption (apps drop their direct dep).
