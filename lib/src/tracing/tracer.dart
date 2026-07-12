@@ -17,6 +17,16 @@ abstract class DropTracing {
   /// because manual/CI-optional collector verification (see
   /// example/docker-compose.yml) needs it too.
   void forceFlush();
+
+  /// The innermost still-open span started through this instance, or null.
+  /// A best-effort approximation of "the current operation" — not proper
+  /// ambient Context propagation (the chosen SDK requires explicitly
+  /// running code inside a `runInContext` zone for that, which nothing in
+  /// this package does yet) — used by L3's `SentryCrashReporter` to tag
+  /// `otel.trace_id`/`otel.span_id` on error events. Always null on
+  /// [NoopDropTracing]: an ID that was never exported has nothing to
+  /// correlate to in Grafana.
+  DropSpanContext? get activeContext;
 }
 
 /// This file is the OTEL SDK import boundary (design principle 1: "the
@@ -40,6 +50,9 @@ class NoopDropTracing implements DropTracing {
 
   @override
   void forceFlush() {}
+
+  @override
+  DropSpanContext? get activeContext => null;
 }
 
 /// Real SDK-backed tracer. Deliberately never touches the SDK's *global*
@@ -74,6 +87,15 @@ class RealDropTracing implements DropTracing {
        );
 
   final sdk.TracerProviderBase _provider;
+
+  // LIFO stack of currently-open spans started through this instance, for
+  // [activeContext]. Instance-scoped (design principle 6) — never shared
+  // across [RealDropTracing] instances.
+  final _openSpans = <DropSpan>[];
+
+  @override
+  DropSpanContext? get activeContext =>
+      _openSpans.isEmpty ? null : _openSpans.last.context;
 
   @override
   DropSpan startSpan(
@@ -117,8 +139,10 @@ class RealDropTracing implements DropTracing {
       sdkSpan
         ..setStatus(api.StatusCode.values.byName(status.name))
         ..end();
+      _openSpans.remove(dropSpan);
     };
 
+    _openSpans.add(dropSpan);
     return dropSpan;
   }
 

@@ -1,7 +1,10 @@
 import 'package:drop_observability/drop_observability.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sentry_flutter/sentry_flutter.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('DropObservability.init', () {
     test('succeeds with only the required config fields', () async {
       final obs = await DropObservability.init(
@@ -76,6 +79,44 @@ void main() {
         expect(a.config.serviceName, 'drop-mobile');
         expect(b.config.serviceName, 'drop-rider');
         expect(identical(a.logger, b.logger), isFalse);
+      },
+    );
+
+    // L3 acceptance criterion: "DSN-empty ⇒ fully disabled". Sentry must
+    // never even be initialized, not just silently skip sending — checked
+    // via Sentry.isEnabled rather than just the crashReporter's type.
+    test(
+      'sentryDsn omitted: crashReporter is Noop and Sentry stays uninitialized',
+      () async {
+        final obs = await DropObservability.init(
+          const ObservabilityConfig(
+            serviceName: 'drop-mobile',
+            environment: 'production',
+            serviceVersion: '1.0.0',
+          ),
+        );
+
+        expect(obs.crashReporter, isA<NoopCrashReporter>());
+        expect(Sentry.isEnabled, isFalse);
+      },
+    );
+
+    test(
+      'sentryDsn set: crashReporter is the real Sentry-backed one',
+      () async {
+        addTearDown(Sentry.close);
+
+        final obs = await DropObservability.init(
+          const ObservabilityConfig(
+            serviceName: 'drop-mobile',
+            environment: 'production',
+            serviceVersion: '1.0.0',
+            sentryDsn: 'https://public@o1.ingest.sentry.io/1',
+          ),
+        );
+
+        expect(obs.crashReporter, isA<SentryCrashReporter>());
+        expect(Sentry.isEnabled, isTrue);
       },
     );
   });

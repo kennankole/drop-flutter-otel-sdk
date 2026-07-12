@@ -7,6 +7,8 @@ library;
 
 export 'src/config.dart';
 export 'src/errors/crash_reporter.dart';
+export 'src/errors/noise_filter.dart';
+export 'src/errors/sentry_crash_reporter.dart';
 export 'src/scrub/attribute_rules.dart' show ForbiddenAttributeException;
 export 'src/logging/logger.dart';
 export 'src/logging/ring_buffer.dart';
