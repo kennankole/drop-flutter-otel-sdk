@@ -11,7 +11,8 @@ This repo is named `drop-flutter-otel-sdk`; the Dart package inside it is `drop_
 ## Status
 
 L0 (SDK spike), L1 (scaffold + no-op core), L2 (tracing + Dio), and L3
-(errors) complete. L4 (logs) not yet started.
+(errors) complete. L4 (logs) descoped — see below. L5 (export policy) not
+yet started.
 
 ## L0 — SDK Spike Decision
 
@@ -65,13 +66,53 @@ code changes, per design principle 1's whole justification.
   L5's export policy (bounded queue, drop-oldest) should treat any export failure as expected
   and non-fatal by design, so this is a lower-severity note than the dartastic findings.
 
-## Reproducing the spike
+## L4 — Logs: Descoped
+
+**Decision: no real OTEL log export for now.** `RingBufferLogger` (L1) — the in-memory
+warning+ tail attached to Sentry error events (L3) — remains the only logging backend.
+`logging/otel_log_bridge.dart` from `OTEL_LIBRARY_PLAN.md` §4 is not built.
+
+**Why:** `opentelemetry` (Workiva) — the SDK chosen in L0 — has no log-export
+implementation at all. `sdk/` has `trace/`, `metrics/`, `resource/` but no `logs/`;
+`api/logs/` is an abstract interface plus a no-op stub, and neither is re-exported from
+the package's public `api.dart`/`sdk.dart` barrels. This was missed in L0 because the
+original spike criteria only covered traces.
+
+A re-spike (`spike/dartastic_logs_probe/`) confirmed `dartastic_opentelemetry` — L0's
+disqualified alternative — has a genuinely reliable **logs** pipeline: two clean runs
+delivered 15/15 and 16/16 records (vs. its trace pipeline's 33% silent loss), using an
+entirely different exporter/processor (`BatchLogRecordProcessor` /
+`OtlpHttpLogRecordExporter`). Cross-SDK trace/span correlation — the exact mechanism
+this package would need, since spans come from the Workiva tracer, not dartastic's — was
+verified empirically too: a `SpanContext` built purely from externally-supplied hex
+strings (`OTel.traceIdFrom()`/`OTel.spanIdFrom()`) produced a log record in the collector
+carrying those exact IDs.
+
+The blocker isn't reliability — it's that using dartastic *at all*, even logs-only,
+reintroduces everything else L0 disqualified it for: the ~2.6 MB transitive Google Cloud
+dependency bloat, solo-maintainer risk, and the compile-break requiring a
+`dependency_overrides` pin — on top of running two OTEL SDKs side by side. Weighed against
+`OBSERVABILITY_STRATEGY.md` Phase 4.5, which already treats logs as the lowest-priority,
+off-by-default signal ("measure ingest GB before any always-on decision"), that cost isn't
+worth it right now.
+
+**Escape hatch:** if OTEL logs become a real priority later, the two live options are (a)
+adopt `dartastic_opentelemetry` logs-only (proven to work, cost is the dependency weight)
+or (b) hand-roll a minimal OTLP/HTTP JSON exporter (OTLP/HTTP supports JSON alongside
+protobuf, avoiding both the GCP bloat and a second SDK's maintenance risk, at the cost of
+owning more code). Neither is blocked technically — this was a scope/cost call, not a
+capability gap.
+
+## Reproducing the spikes
 
 ```
 cd spike/otelcol && docker compose up -d      # local otelcol-contrib on :14318/:14317
 cd spike/opentelemetry_probe && dart pub get && dart run bin/probe.dart
 cd spike/dartastic_probe && dart pub get && dart run bin/probe.dart
 docker compose -f spike/otelcol/docker-compose.yml logs otelcol
+
+# L4 logs re-spike (dartastic_opentelemetry only, not adopted — see above)
+cd spike/dartastic_logs_probe && dart pub get && OTLP_ENDPOINT=http://127.0.0.1:24318 timeout 30 dart run bin/probe.dart
 ```
 
 ## Layout

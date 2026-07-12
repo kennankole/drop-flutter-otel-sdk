@@ -1,0 +1,11 @@
+name: dartastic_logs_probe
+description: L4 spike probe -- dartastic_opentelemetry logs export reliability.
+publish_to: none
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  dartastic_opentelemetry: ^0.9.5
+
+dependency_overrides:
+  dartastic_opentelemetry_api: 1.0.0-beta.2
