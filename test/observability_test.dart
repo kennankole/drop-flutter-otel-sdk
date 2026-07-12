@@ -1,6 +1,17 @@
 import 'package:drop_observability/drop_observability.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
+
+class _EnabledGates implements ObservabilityGates {
+  const _EnabledGates();
+  @override
+  bool get otelEnabled => true;
+  @override
+  double get traceSampleRate => 1.0;
+  @override
+  bool get logsEnabled => false;
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -117,6 +128,51 @@ void main() {
 
         expect(obs.crashReporter, isA<SentryCrashReporter>());
         expect(Sentry.isEnabled, isTrue);
+      },
+    );
+
+    // L5: tokenProvider threads through to the real exporter (unit-tested
+    // in detail in export/otlp_client_test.dart); this just guards the
+    // wiring path itself, the same regression class as L2's "_buildTracing
+    // called twice" bug caught during review.
+    test('otelEnabled with a tokenProvider builds a RealDropTracing', () async {
+      final obs = await DropObservability.init(
+        ObservabilityConfig(
+          serviceName: 'drop-mobile',
+          environment: 'production',
+          serviceVersion: '1.0.0',
+          otlpEndpoint: 'http://127.0.0.1:1/v1/traces',
+          gates: const _EnabledGates(),
+          tokenProvider: () async => 'token',
+        ),
+      );
+
+      expect(obs.tracing, isA<RealDropTracing>());
+    });
+
+    // L5 acceptance criterion: "flush on pause" — the observer is
+    // registered unconditionally (FlushOnPauseObserver's own no-throw
+    // behavior per state is unit-tested directly in
+    // export/flush_on_pause_observer_test.dart); this just checks
+    // WidgetsBinding actually delivers the lifecycle event afterward
+    // without init() having left anything in a broken state.
+    test(
+      'a lifecycle pause notification after init() does not throw',
+      () async {
+        await DropObservability.init(
+          const ObservabilityConfig(
+            serviceName: 'drop-mobile',
+            environment: 'production',
+            serviceVersion: '1.0.0',
+          ),
+        );
+
+        expect(
+          () => WidgetsBinding.instance.handleAppLifecycleStateChanged(
+            AppLifecycleState.paused,
+          ),
+          returnsNormally,
+        );
       },
     );
   });

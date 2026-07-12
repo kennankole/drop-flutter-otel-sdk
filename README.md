@@ -10,9 +10,10 @@ This repo is named `drop-flutter-otel-sdk`; the Dart package inside it is `drop_
 
 ## Status
 
-L0 (SDK spike), L1 (scaffold + no-op core), L2 (tracing + Dio), and L3
-(errors) complete. L4 (logs) descoped — see below. L5 (export policy) not
-yet started.
+L0 (SDK spike), L1 (scaffold + no-op core), L2 (tracing + Dio), L3
+(errors), and L5 (export policy) complete. L4 (logs) descoped — see below.
+Remaining: L6 (adopt in drop-mobile), L7 (rollout to drop-rider,
+drop-admin-mobile).
 
 ## L0 — SDK Spike Decision
 
@@ -102,6 +103,33 @@ or (b) hand-roll a minimal OTLP/HTTP JSON exporter (OTLP/HTTP supports JSON alon
 protobuf, avoiding both the GCP bloat and a second SDK's maintenance risk, at the cost of
 owning more code). Neither is blocked technically — this was a scope/cost call, not a
 capability gap.
+
+## L5 — Export Policy
+
+`RealDropTracing` no longer uses the SDK's own `BatchSpanProcessor`/`CollectorExporter`
+directly. Reading `BatchSpanProcessor`'s source (`lib/src/sdk/trace/span_processors/
+batch_processor.dart`) turned up two undocumented behaviors that conflict with
+`OBSERVABILITY_STRATEGY.md` Phase 3.4's "bounded in-memory queue, drop-oldest":
+
+- Its queue size is a hardcoded `2048`, not configurable via the constructor.
+- On overflow it drops the **newest** span (rejects the incoming one), not the oldest.
+
+`export/export_policy.dart`'s `DropSpanProcessor` is this package's own `SpanProcessor`
+implementing the correct drop-oldest, configurable-size policy (default 500, 60s flush
+interval — matching the strategy's "batch ≥60s"; the "512KB" byte-size trigger from that
+doc isn't implemented, since the SDK has no concept of payload byte size, only span count).
+
+`export/otlp_client.dart`'s `BearerAuthHttpClient` wraps the SDK's `CollectorExporter`
+with a custom `http.Client` that re-fetches the token from `ObservabilityConfig.tokenProvider`
+on every single request rather than caching it at construction, so a token refresh
+mid-flight is picked up on the very next export. A 401 isn't in the SDK's own retry list
+(`429/502/503/504`, confirmed by reading `collector_exporter.dart`), so it's already
+logged and dropped rather than retried in a loop.
+
+The facade-import allowlist (`scripts/check_facade_imports.sh`) now covers three files —
+`tracer.dart`, `export_policy.dart`, `otlp_client.dart` — not just one. All three
+implement SDK-required interfaces for the same facade; the invariant that actually
+matters (no SDK type in the public API) is unchanged and still enforced.
 
 ## Reproducing the spikes
 

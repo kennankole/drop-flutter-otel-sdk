@@ -1,6 +1,8 @@
 import 'package:opentelemetry/api.dart' as api;
 import 'package:opentelemetry/sdk.dart' as sdk;
 
+import '../export/export_policy.dart';
+import '../export/otlp_client.dart';
 import 'span.dart';
 
 /// Package-owned tracing facade — no OTEL SDK type appears in this
@@ -62,26 +64,33 @@ class NoopDropTracing implements DropTracing {
 /// independent instead of silently overwriting each other's global state.
 ///
 /// Sampling is `ParentBasedSampler(AlwaysOnSampler())` — the SDK's own
-/// default — for every span at L2. The SDK ships no ratio-based sampler,
-/// so honoring `gates.traceSampleRate` needs a custom [sdk.Sampler]
-/// implementation; that's deferred to L5 (export/volume policy), where it
-/// belongs alongside the rest of the remote-config volume controls.
+/// default — for every span. The SDK ships no ratio-based sampler, so
+/// honoring `gates.traceSampleRate` would need a custom [sdk.Sampler]
+/// implementation; not built, since sampling everything is the safer
+/// default and volume is already bounded by [ExportPolicyConfig].
 ///
-/// Auth (`tokenProvider` → Bearer header) is deferred to L5's
-/// `otlp_client.dart`; L2's exporter talks to the OTLP endpoint
-/// unauthenticated, matching the phase boundary in OTEL_LIBRARY_PLAN.md.
+/// Export queueing/batching is [DropSpanProcessor] (L5), not the SDK's
+/// own [sdk.BatchSpanProcessor] — see that class's doc for why. Auth is
+/// [buildOtlpSpanExporter] (L5), which refreshes the Bearer token from
+/// `tokenProvider` on every request.
 class RealDropTracing implements DropTracing {
   RealDropTracing({
     required String otlpEndpoint,
     required Map<String, String> resourceAttributes,
+    Future<String?> Function()? tokenProvider,
+    ExportPolicyConfig exportPolicy = const ExportPolicyConfig(),
   }) : _provider = sdk.TracerProviderBase(
          resource: sdk.Resource([
            for (final entry in resourceAttributes.entries)
              api.Attribute.fromString(entry.key, entry.value),
          ]),
          processors: [
-           sdk.BatchSpanProcessor(
-             sdk.CollectorExporter(Uri.parse(otlpEndpoint)),
+           DropSpanProcessor(
+             buildOtlpSpanExporter(
+               endpoint: Uri.parse(otlpEndpoint),
+               tokenProvider: tokenProvider,
+             ),
+             exportPolicy,
            ),
          ],
        );
