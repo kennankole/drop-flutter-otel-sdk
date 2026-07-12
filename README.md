@@ -1,149 +1,188 @@
-# drop-flutter-otel-sdk
+# drop_observability
 
-The Shared Flutter OTEL Library — implements `drop_observability`, the shared instrumentation
-package designed in `drop-mobile/OTEL_LIBRARY_PLAN.md` (itself derived from
-`drop-mobile/OBSERVABILITY_STRATEGY.md` Appendix F). Consumed by `drop-mobile`, `drop-rider`,
-and `drop-admin-mobile` as a pinned git dependency.
+A shared Flutter instrumentation package for Drop's mobile apps — traces via
+OpenTelemetry, error reporting via Sentry, and Dio HTTP instrumentation, behind a single
+facade so no app code depends on the underlying SDKs directly.
 
-This repo is named `drop-flutter-otel-sdk`; the Dart package inside it is `drop_observability`
-(same repo/package-name split as the `authentication-sdk` precedent).
+Built for `drop-mobile`, `drop-rider`, and `drop-admin-mobile`, consumed as a pinned git
+dependency. The repository is named `drop-flutter-otel-sdk`; the Dart package inside it
+is `drop_observability`.
 
-## Status
+## Features
 
-L0 (SDK spike), L1 (scaffold + no-op core), L2 (tracing + Dio), L3
-(errors), and L5 (export policy) complete. L4 (logs) descoped — see below.
-Remaining: L6 (adopt in drop-mobile), L7 (rollout to drop-rider,
-drop-admin-mobile).
+- **Tracing** — spans backed by the OpenTelemetry SDK, exported over OTLP/HTTP, with
+  W3C `traceparent` propagation.
+- **HTTP instrumentation** — a Dio interceptor that creates a span per request, injects
+  trace context into outbound headers, and names spans from a templated route
+  (`/orders/{id}`, never the raw URL) to keep cardinality low.
+- **Error reporting** — a Sentry-backed crash reporter that automatically tags events
+  with the active trace/span ID and attaches the recent log tail, plus a filter that
+  drops network-noise exceptions (timeouts, cancellations) before they cost quota.
+- **Structured logging** — leveled logging with an in-memory ring buffer (last ~200
+  warning-and-above lines), attached to error events for context.
+- **Off by default** — with no configuration, every call is a safe no-op: no network
+  calls, no crash reporter initialized, nothing exported. Each capability turns on only
+  when its config is supplied, so apps never need to guard call sites.
+- **Bounded, non-blocking export** — a fixed-size queue that drops the oldest buffered
+  span under sustained load rather than growing unbounded or blocking the app, flushed
+  automatically when the app is backgrounded.
 
-## L0 — SDK Spike Decision
+## Installation
 
-**Decision: `opentelemetry` (Workiva, pub.dev) — not `dartastic_opentelemetry`.**
+Add as a git dependency, pinned to a released tag:
 
-Both packages were evaluated empirically (not just from docs) against a local OTEL collector,
-per the spike criteria in `OTEL_LIBRARY_PLAN.md`. Reproduction scripts are in `spike/`.
+```yaml
+dependencies:
+  drop_observability:
+    git:
+      url: https://github.com/kennankole/drop-flutter-otel-sdk.git
+      ref: v1.0.0
+```
 
-| Criterion | `opentelemetry` (Workiva) 0.18.11 | `dartastic_opentelemetry` 0.9.5 |
+## Quick start
+
+```dart
+import 'package:dio/dio.dart';
+import 'package:drop_observability/drop_observability.dart';
+import 'package:flutter/material.dart';
+
+Future<void> main() async {
+  final obs = await DropObservability.init(
+    ObservabilityConfig(
+      serviceName: 'drop-mobile',
+      environment: 'production',
+      serviceVersion: packageInfo.version,
+      otlpEndpoint: '${AppConfig.apiUrl}/otlp/v1/traces',
+      sentryDsn: AppConfig.sentryDsn,
+      gates: FirebaseObservabilityGates(remoteConfig),
+      tokenProvider: () => secureStorage.readAccessToken(),
+    ),
+  );
+
+  final dio = Dio()..interceptors.add(obs.dioInterceptor);
+
+  runApp(MyApp(obs: obs, dio: dio));
+}
+```
+
+Any field left out keeps that capability disabled — see [Configuration](#configuration).
+
+## Usage
+
+### Tracing
+
+```dart
+final span = obs.tracing.startSpan('checkout', attributes: {'order.items': 3});
+try {
+  await placeOrder();
+  span.end(status: DropSpanStatus.ok);
+} catch (e) {
+  span.end(status: DropSpanStatus.error);
+  rethrow;
+}
+```
+
+Pass `parentContext: someSpan.context` to `startSpan` to nest a child span under a
+parent — trace ID is inherited, a new span ID is assigned.
+
+Certain attribute keys (`userId`, `storeId`, `deviceId`) are rejected at
+`setAttribute()` time — they're high-cardinality identifiers that must never become a
+resource attribute or metric label. Put them in the log/error body instead if they need
+to be recorded.
+
+### HTTP instrumentation
+
+```dart
+dio.interceptors.add(obs.dioInterceptor);
+```
+
+Every request gets a span named `METHOD /templated/route`, a `traceparent` header, and
+is closed with the response status or marked as an error automatically.
+
+### Error reporting
+
+```dart
+try {
+  await riskyOperation();
+} catch (error, stackTrace) {
+  await obs.crashReporter.recordError(error, stackTrace);
+}
+
+obs.crashReporter.setUserId(currentUser.id);
+```
+
+Wire `FlutterError.onError` and `PlatformDispatcher.instance.onError` to
+`obs.crashReporter.recordFlutterError`/`recordError` for global error capture. Events
+are automatically tagged with the active span's trace/span ID (when there is one) and
+carry the recent log tail as context, so a Sentry issue links straight to its trace in
+Grafana and to what was logged right before it happened.
+
+### Logging
+
+```dart
+obs.logger.w('poll degraded', fields: {'storeId': id});
+obs.logger.e('checkout failed', fields: {'orderId': orderId});
+```
+
+Fields are folded into the log body, never treated as labels. Logs stay device-local
+(no remote export yet — see [docs/DECISIONS.md](docs/DECISIONS.md)); the last ~200
+warning-and-above lines are attached to error events automatically.
+
+## Configuration
+
+`ObservabilityConfig` is the only per-app configuration surface:
+
+| Field | Required | Effect |
 |---|---|---|
-| **Compiles out of the box** (`pub get` + build, no overrides) | ✅ Yes | ❌ **No.** Its declared constraint `dartastic_opentelemetry_api: ^1.0.0-beta.2` resolves by default to `1.0.0-beta.9`, which doesn't implement `APITracer.timeProvider`/`APITracerProvider.timeProvider` — a compile error. Fixed only by manually pinning `dependency_overrides: dartastic_opentelemetry_api: 1.0.0-beta.2`. This is what any new consumer gets today running `flutter pub add dartastic_opentelemetry`. |
-| **OTLP/HTTP export** (spans reach a real `otelcol-contrib`) | ✅ 15/15 spans delivered | ✅ 10/15 delivered (see reliability row) |
-| **Batching** (`BatchSpanProcessor`, custom size/delay respected) | ✅ Correct | ✅ Correct (when it doesn't silently drop the tail — see below) |
-| **W3C propagation** (inject → carrier → extract, trace ID preserved) | ✅ Verified round-trip | ✅ Verified round-trip, but: `TextMapSetter`/`TextMapGetter` are **not re-exported** from the main `dartastic_opentelemetry` barrel despite the published quickstart only importing that barrel — must import `dartastic_opentelemetry_api` directly. Their `set(key, value)`/`get(key)` shape (carrier bound at construction) also diverges from Workiva's spec-shaped `set(carrier, key, value)`. |
-| **Reliability under `forceFlush()`/`shutdown()`** | ✅ All 15 spans arrived. Two transient `ClientException` warnings were logged (see below) but recovered — no data loss. | ❌ **Silently dropped 5 of 15 spans** (the tail batch) even though `forceFlush()` and `shutdown()` both returned normally with no error. This is the single most disqualifying result: `OTEL_LIBRARY_PLAN.md`'s L5 export-policy phase explicitly depends on flush-on-pause being reliable. |
-| **Error visibility** | Failures surface via `package:logging`, but **silent unless a listener is attached** (no default sink) — the facade must attach one. | Failures in the dropped-batch case produced **no log output at all** — worse, since there's nothing to attach a listener to. |
-| **Binary size delta** (release APK, baseline 42,561,322 bytes) | **+17,688 bytes** (~17 KB) | **+2,658,410 bytes** (~2.6 MB) — **~150x larger**, because it transitively pulls in `google_cloud`, `googleapis_auth`, and `google_identity_services_web`. |
-| **Dependency tree / vendor coupling** | Pure OTLP client: `http`, `protobuf`, `grpc`-free. No cloud-vendor deps. | Pulls Google Cloud auth/identity packages transitively, and `OTel.initialize()` accepts `dartasticApiKey`/`tenantId` params — the package is oriented around the author's commercial Dartastic.io SaaS backend, not a neutral OTLP client. Directly conflicts with `OTEL_LIBRARY_PLAN.md` design principle 3 ("keeps the package's dependency tree minimal"). |
-| **Maintainer / bus factor** | Workiva (established company, verified pub.dev publisher). GitHub: 87 stars, 26 open issues, actively updated (last push June 2026). | Solo-maintained by Michael Bushe (Mindful Software). Still mid-donation to CNCF as of July 2026 (donation proposal open, not accepted) — same "in-progress" status as when `OBSERVABILITY_STRATEGY.md` was written. |
-| **API surface stability** | `opentelemetry (pub.dev 0.9.x)` as named in the original plan is stale — actual latest is **0.18.11**. Still pre-1.0, breaking changes possible, but the package works and its docs/examples are accurate. | Pre-1.0 (`0.9.5`) with a separate pre-1.0-beta API package (`1.0.0-beta.9`) — two independently-versioned pre-1.0 packages that can (and did) drift into an incompatible combination. |
+| `serviceName` | ✅ | Identifies the app in Grafana, e.g. `drop-mobile`, `drop-rider`. |
+| `environment` | ✅ | e.g. `production`, `staging`. |
+| `serviceVersion` | ✅ | App version string (the package never fetches this itself). |
+| `otlpEndpoint` | — | OTLP ingest URL. Omitted or empty ⇒ tracing stays a no-op regardless of `gates`. |
+| `sentryDsn` | — | Omitted or empty ⇒ error reporting stays fully disabled; Sentry is never initialized. |
+| `gates` | — | App-supplied volume/kill-switch controls (see below). Defaults to everything off. |
+| `tokenProvider` | — | Supplies a bearer token for the authenticated OTLP ingest route, called fresh on every export so token refresh is transparent. |
 
-### Why this is decisive, not close
+`gates` implements `ObservabilityGates` — the app owns how this is backed (typically
+remote config), so the package has no dependency on any particular config provider:
 
-The reliability and compile-integrity findings are the load-bearing ones: a telemetry library
-that silently drops the flush-on-pause batch defeats the entire purpose of `OTEL_LIBRARY_PLAN.md`
-§5 L5 ("bounded queue... token refresh mid-flight doesn't wedge the exporter"), and a package
-that doesn't compile against its own declared dependency range by default is not something to
-build a facade on top of today, however active its CNCF donation process. The binary-size and
-dependency-tree findings independently violate design principle 3 (no unnecessary vendor
-coupling) hard enough to disqualify it even if the reliability issue were fixed.
-
-### Escape hatch
-
-Per the facade rule (`OTEL_LIBRARY_PLAN.md` design principle 1), the OTEL SDK is imported only
-inside `lib/src/tracing/tracer.dart`. If `opentelemetry` (Workiva) stalls or regresses, or if
-`dartastic_opentelemetry` resolves its compile/reliability issues and completes CNCF donation,
-swapping SDKs is a change to that one file plus a package minor/patch bump — no consuming app
-code changes, per design principle 1's whole justification.
-
-### Known issues to carry into L1/L2
-
-- Attach a `package:logging` `Logger.root.onRecord` listener inside the facade and route it
-  through `AppLogger`/Sentry breadcrumbs — otherwise `CollectorExporter` failures are invisible
-  by default (confirmed above).
-- The transient `ClientException: Connection closed before full header was received` warnings
-  seen under concurrent unawaited exports (multiple batches firing near-simultaneously) — the
-  package's retry logic only covers specific HTTP status codes (429/502/503/504), not
-  network-level exceptions, which are logged and dropped without retry. Worth a real-device/
-  real-network retest in L2, since this was observed against a local Docker collector and may
-  be an artifact of this environment's Docker proxy rather than the package itself; either way,
-  L5's export policy (bounded queue, drop-oldest) should treat any export failure as expected
-  and non-fatal by design, so this is a lower-severity note than the dartastic findings.
-
-## L4 — Logs: Descoped
-
-**Decision: no real OTEL log export for now.** `RingBufferLogger` (L1) — the in-memory
-warning+ tail attached to Sentry error events (L3) — remains the only logging backend.
-`logging/otel_log_bridge.dart` from `OTEL_LIBRARY_PLAN.md` §4 is not built.
-
-**Why:** `opentelemetry` (Workiva) — the SDK chosen in L0 — has no log-export
-implementation at all. `sdk/` has `trace/`, `metrics/`, `resource/` but no `logs/`;
-`api/logs/` is an abstract interface plus a no-op stub, and neither is re-exported from
-the package's public `api.dart`/`sdk.dart` barrels. This was missed in L0 because the
-original spike criteria only covered traces.
-
-A re-spike (`spike/dartastic_logs_probe/`) confirmed `dartastic_opentelemetry` — L0's
-disqualified alternative — has a genuinely reliable **logs** pipeline: two clean runs
-delivered 15/15 and 16/16 records (vs. its trace pipeline's 33% silent loss), using an
-entirely different exporter/processor (`BatchLogRecordProcessor` /
-`OtlpHttpLogRecordExporter`). Cross-SDK trace/span correlation — the exact mechanism
-this package would need, since spans come from the Workiva tracer, not dartastic's — was
-verified empirically too: a `SpanContext` built purely from externally-supplied hex
-strings (`OTel.traceIdFrom()`/`OTel.spanIdFrom()`) produced a log record in the collector
-carrying those exact IDs.
-
-The blocker isn't reliability — it's that using dartastic *at all*, even logs-only,
-reintroduces everything else L0 disqualified it for: the ~2.6 MB transitive Google Cloud
-dependency bloat, solo-maintainer risk, and the compile-break requiring a
-`dependency_overrides` pin — on top of running two OTEL SDKs side by side. Weighed against
-`OBSERVABILITY_STRATEGY.md` Phase 4.5, which already treats logs as the lowest-priority,
-off-by-default signal ("measure ingest GB before any always-on decision"), that cost isn't
-worth it right now.
-
-**Escape hatch:** if OTEL logs become a real priority later, the two live options are (a)
-adopt `dartastic_opentelemetry` logs-only (proven to work, cost is the dependency weight)
-or (b) hand-roll a minimal OTLP/HTTP JSON exporter (OTLP/HTTP supports JSON alongside
-protobuf, avoiding both the GCP bloat and a second SDK's maintenance risk, at the cost of
-owning more code). Neither is blocked technically — this was a scope/cost call, not a
-capability gap.
-
-## L5 — Export Policy
-
-`RealDropTracing` no longer uses the SDK's own `BatchSpanProcessor`/`CollectorExporter`
-directly. Reading `BatchSpanProcessor`'s source (`lib/src/sdk/trace/span_processors/
-batch_processor.dart`) turned up two undocumented behaviors that conflict with
-`OBSERVABILITY_STRATEGY.md` Phase 3.4's "bounded in-memory queue, drop-oldest":
-
-- Its queue size is a hardcoded `2048`, not configurable via the constructor.
-- On overflow it drops the **newest** span (rejects the incoming one), not the oldest.
-
-`export/export_policy.dart`'s `DropSpanProcessor` is this package's own `SpanProcessor`
-implementing the correct drop-oldest, configurable-size policy (default 500, 60s flush
-interval — matching the strategy's "batch ≥60s"; the "512KB" byte-size trigger from that
-doc isn't implemented, since the SDK has no concept of payload byte size, only span count).
-
-`export/otlp_client.dart`'s `BearerAuthHttpClient` wraps the SDK's `CollectorExporter`
-with a custom `http.Client` that re-fetches the token from `ObservabilityConfig.tokenProvider`
-on every single request rather than caching it at construction, so a token refresh
-mid-flight is picked up on the very next export. A 401 isn't in the SDK's own retry list
-(`429/502/503/504`, confirmed by reading `collector_exporter.dart`), so it's already
-logged and dropped rather than retried in a loop.
-
-The facade-import allowlist (`scripts/check_facade_imports.sh`) now covers three files —
-`tracer.dart`, `export_policy.dart`, `otlp_client.dart` — not just one. All three
-implement SDK-required interfaces for the same facade; the invariant that actually
-matters (no SDK type in the public API) is unchanged and still enforced.
-
-## Reproducing the spikes
-
-```
-cd spike/otelcol && docker compose up -d      # local otelcol-contrib on :14318/:14317
-cd spike/opentelemetry_probe && dart pub get && dart run bin/probe.dart
-cd spike/dartastic_probe && dart pub get && dart run bin/probe.dart
-docker compose -f spike/otelcol/docker-compose.yml logs otelcol
-
-# L4 logs re-spike (dartastic_opentelemetry only, not adopted — see above)
-cd spike/dartastic_logs_probe && dart pub get && OTLP_ENDPOINT=http://127.0.0.1:24318 timeout 30 dart run bin/probe.dart
+```dart
+abstract class ObservabilityGates {
+  bool get otelEnabled;       // master kill switch
+  double get traceSampleRate; // 0.0–1.0, only consulted when otelEnabled is true
+  bool get logsEnabled;       // independent of traceSampleRate
+}
 ```
 
-## Layout
+When `gates` is omitted, it defaults to an implementation with everything off.
 
-See `drop-mobile/OTEL_LIBRARY_PLAN.md` §4 for the target package layout (not yet scaffolded —
-that's L1).
+## Development
+
+```bash
+make lint           # flutter analyze + dart format check
+make test            # flutter test
+make facade-check    # verifies the OTEL SDK is only imported where it's meant to be
+```
+
+`example/` is a minimal runnable app exercising the full public API. To see spans
+actually reach a collector:
+
+```bash
+cd example
+docker compose up -d                                    # local otelcol on :4318
+flutter run -d linux --dart-define=OTEL_ENABLED=true
+```
+
+### Releasing
+
+```bash
+make release VERSION=x.y.z          # add DRY_RUN=1 to preview without writing anything
+```
+
+Runs the full test/lint/facade-check gate, drafts a changelog entry from commit
+history, bumps the package version, and tags the release that consuming apps pin to.
+
+## Further reading
+
+- [`docs/DECISIONS.md`](docs/DECISIONS.md) — why this OTEL SDK, why log export isn't
+  implemented, and why the export queue is custom-built instead of using the SDK's own.
+- `CHANGELOG.md` — released versions.
