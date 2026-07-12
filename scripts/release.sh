@@ -106,7 +106,7 @@ check_git_state() {
   local_head="$(git -C "$REPO_ROOT" rev-parse HEAD)"
   remote_head="$(git -C "$REPO_ROOT" rev-parse origin/main 2>/dev/null || echo "")"
   if [[ -n "$remote_head" && "$local_head" != "$remote_head" ]]; then
-    warn "SKIPPING remote sync check for local dry-run test"
+    die "Local main is not up to date with origin/main. Pull first."
   fi
   ok "Up to date with origin/main"
 }
