@@ -1,0 +1,9 @@
+name: opentelemetry_probe
+description: L0 spike probe for the `opentelemetry` (Workiva) package.
+publish_to: none
+environment:
+  sdk: ^3.10.4
+
+dependencies:
+  opentelemetry: ^0.18.11
+  logging: ^1.3.0
