@@ -1,0 +1,8 @@
+services:
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otelcol-config.yaml:/etc/otelcol/config.yaml
+    ports:
+      - "4318:4318"

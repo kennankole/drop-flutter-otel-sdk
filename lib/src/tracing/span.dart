@@ -49,8 +49,11 @@ class DropSpanContext {
 }
 
 /// Package-owned span wrapper — no OTEL SDK type appears here (design
-/// principle 1). At L1 this only tracks local state and is never exported;
-/// L2 wires it to the chosen SDK behind [DropTracing].
+/// principle 1). At L1 this only tracked local state. From L2 on,
+/// `tracer.dart` (the SDK import boundary) backs a span with the real SDK
+/// by wiring [onSetAttribute]/[onEnd] and supplying the SDK-assigned
+/// [DropSpanContext] via [DropSpan.withContext], so the IDs in the
+/// `traceparent` header always match what's actually exported.
 class DropSpan {
   DropSpan(
     this.name, {
@@ -58,6 +61,19 @@ class DropSpan {
     Map<String, Object?>? attributes,
   }) : context = DropSpanContext(traceId: parentContext?.traceId),
        attributes = {} {
+    if (attributes != null) {
+      attributes.forEach(setAttribute);
+    }
+  }
+
+  /// Used by tracer.dart backends whose context (trace/span IDs) is
+  /// authoritative — e.g. assigned by a real SDK span — rather than
+  /// generated locally.
+  DropSpan.withContext(
+    this.name,
+    this.context, {
+    Map<String, Object?>? attributes,
+  }) : attributes = {} {
     if (attributes != null) {
       attributes.forEach(setAttribute);
     }
@@ -71,6 +87,12 @@ class DropSpan {
 
   bool get isEnded => _ended;
 
+  /// Set by [DropTracing] implementations that back this span with a real
+  /// SDK span. Not part of the public contract for app code — apps only
+  /// ever call [setAttribute]/[end].
+  void Function(String key, Object? value)? onSetAttribute;
+  void Function(DropSpanStatus status)? onEnd;
+
   /// Throws [ForbiddenAttributeException] for a forbidden key (design
   /// principle 4) — a span attribute typo like `userId` is a programming
   /// error worth catching immediately, not a runtime data issue to scrub
@@ -79,11 +101,13 @@ class DropSpan {
     if (_ended) return;
     assertNoForbiddenAttributes({key: value});
     attributes[key] = value;
+    onSetAttribute?.call(key, value);
   }
 
   void end({DropSpanStatus status = DropSpanStatus.ok}) {
     if (_ended) return;
     this.status = status;
     _ended = true;
+    onEnd?.call(status);
   }
 }

@@ -14,6 +14,9 @@ dependencies:
   flutter:
     sdk: flutter
   dio: ^5.9.1
+  # Pinned exactly (no caret) — pre-1.0 minors are breaking. See README.md's
+  # L0 decision. Chosen over dartastic_opentelemetry.
+  opentelemetry: 0.18.11
 
 dev_dependencies:
   flutter_test:
