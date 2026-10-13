@@ -108,7 +108,12 @@ try {
   await obs.crashReporter.recordError(error, stackTrace);
 }
 
-obs.crashReporter.setUserId(currentUser.id);
+obs.crashReporter.setUserId(currentUser.id); // on sign-in
+obs.crashReporter.clearUser();               // on sign-out
+
+// A failed API call, tagged with that request's trace ID, route and status.
+// Which failures are worth reporting is the app's decision.
+obs.crashReporter.recordApiError(dioException);
 ```
 
 Wire `FlutterError.onError` and `PlatformDispatcher.instance.onError` to
@@ -148,12 +153,17 @@ remote config), so the package has no dependency on any particular config provid
 ```dart
 abstract class ObservabilityGates {
   bool get otelEnabled;       // master kill switch
-  double get traceSampleRate; // 0.0–1.0, only consulted when otelEnabled is true
+  double get traceSampleRate; // 0.0–1.0 share of root traces kept, when otelEnabled
   bool get logsEnabled;       // independent of traceSampleRate
 }
 ```
 
 When `gates` is omitted, it defaults to an implementation with everything off.
+
+Both `otelEnabled` and `traceSampleRate` are read on every span, not once at `init()`,
+so implement them as live getters: a remote-config fetch that finishes after startup
+then applies in the same session. The sampled decision travels in `traceparent`, so a
+backend that follows the client's flag records the same share of traces.
 
 ## Development
 

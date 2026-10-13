@@ -101,4 +101,41 @@ void main() {
       expect(span.attributes, isEmpty);
     });
   });
+
+  group('sampled flag', () {
+    test('a context renders its own flag unless told otherwise', () {
+      expect(DropSpanContext(sampled: true).toTraceparent(), endsWith('-01'));
+      expect(DropSpanContext().toTraceparent(), endsWith('-00'));
+      expect(
+        DropSpanContext(sampled: true).toTraceparent(sampled: false),
+        endsWith('-00'),
+      );
+    });
+
+    test('fromTraceparent reads the sampled flag', () {
+      final id = DropSpanContext();
+      expect(
+        DropSpanContext.fromTraceparent(
+          '00-${id.traceId}-${id.spanId}-01',
+        )!.sampled,
+        isTrue,
+      );
+      expect(
+        DropSpanContext.fromTraceparent(
+          '00-${id.traceId}-${id.spanId}-00',
+        )!.sampled,
+        isFalse,
+      );
+    });
+
+    // A local (unexported) span has made no decision, so a root keeps the
+    // pre-1.1 "sampled" and a child inherits its parent's flag.
+    test('a local span is sampled at the root and inherits otherwise', () {
+      expect(DropSpan('root').context.sampled, isTrue);
+      expect(
+        DropSpan('child', parentContext: DropSpanContext()).context.sampled,
+        isFalse,
+      );
+    });
+  });
 }

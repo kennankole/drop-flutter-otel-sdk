@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:drop_observability/drop_observability.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -137,6 +138,91 @@ void main() {
 
       await expectLater(reporter.setUserId('user-123'), completes);
       await expectLater(reporter.log('hello'), completes);
+    });
+
+    // L7: there was no way to detach a user, so the previous customer's ID
+    // rode on every later event on the device.
+    test('clearUser detaches the user set by setUserId', () async {
+      final reporter = SentryCrashReporter(
+        ringBuffer: LogRingBuffer(),
+        tracing: _FakeTracing(),
+      );
+
+      await reporter.setUserId('user-123');
+      await reporter.recordError(Exception('a'), StackTrace.current);
+      expect(captured!.user?.id, 'user-123');
+
+      await reporter.clearUser();
+      await reporter.recordError(Exception('b'), StackTrace.current);
+      expect(captured!.user, isNull);
+    });
+
+    group('recordApiError', () {
+      const requestTraceId = '4bf92f3577b34da6a3ce929d0e0e4736';
+
+      DioException failure({int status = 403}) {
+        final options = RequestOptions(
+          method: 'GET',
+          path: '/api/v1/orders/507f1f77bcf86cd799439011?page=2',
+          headers: {'traceparent': '00-$requestTraceId-00f067aa0ba902b7-01'},
+        );
+        return DioException.badResponse(
+          statusCode: status,
+          requestOptions: options,
+          response: Response<dynamic>(
+            requestOptions: options,
+            statusCode: status,
+          ),
+        );
+      }
+
+      test('tags the failed request trace, route and status', () async {
+        final reporter = SentryCrashReporter(
+          ringBuffer: LogRingBuffer(),
+          tracing: _FakeTracing(),
+        );
+
+        await reporter.recordApiError(failure());
+
+        final event = captured!;
+        expect(event.tags?['otel.trace_id'], requestTraceId);
+        expect(event.tags?['http.method'], 'GET');
+        expect(event.tags?['http.route'], '/api/v1/orders/{id}');
+        expect(event.tags?['http.status_code'], '403');
+        expect(event.fingerprint, [
+          'api-request-failure',
+          'GET',
+          '/api/v1/orders/{id}',
+          '403',
+        ]);
+        expect(event.level, SentryLevel.warning);
+        expect(event.throwable, isA<ApiRequestFailure>());
+      });
+
+      // The active span belongs to some other operation by the time a
+      // failed request is reported.
+      test('prefers the request trace over the active span', () async {
+        final reporter = SentryCrashReporter(
+          ringBuffer: LogRingBuffer(),
+          tracing: _FakeTracing(DropSpanContext()),
+        );
+
+        await reporter.recordApiError(failure());
+
+        expect(captured!.tags?['otel.trace_id'], requestTraceId);
+        expect(captured!.tags?.containsKey('otel.span_id'), isFalse);
+      });
+
+      test('carries the log tail like any other event', () async {
+        final reporter = SentryCrashReporter(
+          ringBuffer: LogRingBuffer()..add('[error] boom'),
+          tracing: _FakeTracing(),
+        );
+
+        await reporter.recordApiError(failure());
+
+        expect(captured!.contexts.containsKey('log_tail'), isTrue);
+      });
     });
   });
 }

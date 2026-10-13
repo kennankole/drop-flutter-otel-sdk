@@ -33,14 +33,53 @@ void main() {
   // full batch) — the dummy endpoint below is never actually dialed
   // within a single test's lifetime, so these stay fast and offline.
   group('RealDropTracing', () {
-    RealDropTracing makeTracer() => RealDropTracing(
-      otlpEndpoint: 'http://127.0.0.1:1/v1/traces',
-      resourceAttributes: {
-        'service.name': 'test-service',
-        'deployment.environment': 'test',
-        'service.version': '0.0.1',
-      },
-    );
+    RealDropTracing makeTracer({double Function()? sampleRate}) =>
+        RealDropTracing(
+          otlpEndpoint: 'http://127.0.0.1:1/v1/traces',
+          resourceAttributes: {
+            'service.name': 'test-service',
+            'deployment.environment': 'test',
+            'service.version': '0.0.1',
+          },
+          sampleRate: sampleRate,
+        );
+
+    // L1: traceSampleRate used to be ignored — every span exported.
+    test('a root span carries the sampler decision for its rate', () {
+      final none = makeTracer(sampleRate: () => 0).startSpan('a');
+      final all = makeTracer(sampleRate: () => 1).startSpan('b');
+
+      expect(none.context.sampled, isFalse);
+      expect(none.context.toTraceparent(), endsWith('-00'));
+      expect(all.context.sampled, isTrue);
+      expect(all.context.toTraceparent(), endsWith('-01'));
+    });
+
+    test('reads the rate per span, not once', () {
+      var rate = 0.0;
+      final tracer = makeTracer(sampleRate: () => rate);
+
+      expect(tracer.startSpan('a').context.sampled, isFalse);
+      rate = 1.0;
+      expect(tracer.startSpan('b').context.sampled, isTrue);
+    });
+
+    test('a child follows its parent decision, not the rate', () {
+      final tracer = makeTracer(sampleRate: () => 1);
+      final unsampledParent = DropSpanContext();
+      final sampledParent = DropSpanContext(sampled: true);
+
+      expect(
+        tracer.startSpan('a', parentContext: unsampledParent).context.sampled,
+        isFalse,
+      );
+      expect(
+        makeTracer(
+          sampleRate: () => 0,
+        ).startSpan('b', parentContext: sampledParent).context.sampled,
+        isTrue,
+      );
+    });
 
     test('startSpan returns a DropSpan with SDK-assigned, valid W3C IDs', () {
       final span = makeTracer().startSpan('checkout');

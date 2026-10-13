@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 /// Interface mirroring `drop-mobile`'s existing `CrashReporter`
@@ -18,6 +19,20 @@ abstract class CrashReporter {
 
   Future<void> setUserId(String userId);
 
+  /// Detaches the user set by [setUserId], so later events — including a
+  /// different person's after they sign in on the same device — are not
+  /// attributed to the previous one. Call it on sign-out.
+  Future<void> clearUser();
+
+  /// Reports a failed API request as a non-fatal, tagged with that
+  /// request's trace ID (`otel.trace_id`), templated route and status, so
+  /// the event opens straight onto the backend trace.
+  ///
+  /// Reports unconditionally: deciding *which* failures matter (skip
+  /// connectivity, expected statuses, 5xx the backend already reports) is
+  /// the app's call, not the package's.
+  Future<void> recordApiError(DioException error);
+
   Future<void> log(String message);
 }
 
@@ -36,6 +51,12 @@ class NoopCrashReporter implements CrashReporter {
 
   @override
   Future<void> setUserId(String userId) async {}
+
+  @override
+  Future<void> clearUser() async {}
+
+  @override
+  Future<void> recordApiError(DioException error) async {}
 
   @override
   Future<void> log(String message) async {}

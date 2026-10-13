@@ -9,6 +9,7 @@ import 'export/flush_on_pause_observer.dart';
 import 'logging/logger.dart';
 import 'logging/ring_buffer.dart';
 import 'network/dio_interceptor.dart';
+import 'tracing/gated_tracing.dart';
 import 'tracing/resource.dart';
 import 'tracing/tracer.dart';
 
@@ -32,8 +33,12 @@ class DropObservability {
 
   /// Builds a fully-wired instance.
   ///
-  /// Tracing goes real (L2) only when `gates.otelEnabled` is true *and* an
-  /// `otlpEndpoint` is configured — otherwise it stays [NoopDropTracing].
+  /// Tracing goes real (L2) only while `gates.otelEnabled` is true *and* an
+  /// `otlpEndpoint` is configured. With an endpoint, [tracing] is a
+  /// [GatedDropTracing] that reads the gate per span, so a remote-config
+  /// fetch that lands after `init()` still applies this session; without
+  /// one it is [NoopDropTracing]. Root spans are kept at
+  /// `gates.traceSampleRate`, also read per span.
   /// Crash reporting goes real (L3) only when `sentryDsn` is non-empty —
   /// otherwise it stays [NoopCrashReporter] and `SentryFlutter.init()` is
   /// never even called. Both match design principle 2. A
@@ -60,17 +65,21 @@ class DropObservability {
 
   static DropTracing _buildTracing(ObservabilityConfig config) {
     final endpoint = config.otlpEndpoint;
-    if (!config.gates.otelEnabled || endpoint == null || endpoint.isEmpty) {
+    if (endpoint == null || endpoint.isEmpty) {
       return const NoopDropTracing();
     }
-    return RealDropTracing(
-      otlpEndpoint: endpoint,
-      resourceAttributes: buildResourceAttributes(
-        serviceName: config.serviceName,
-        environment: config.environment,
-        serviceVersion: config.serviceVersion,
+    return GatedDropTracing(
+      gates: config.gates,
+      buildReal: () => RealDropTracing(
+        otlpEndpoint: endpoint,
+        resourceAttributes: buildResourceAttributes(
+          serviceName: config.serviceName,
+          environment: config.environment,
+          serviceVersion: config.serviceVersion,
+        ),
+        tokenProvider: config.tokenProvider,
+        sampleRate: () => config.gates.traceSampleRate,
       ),
-      tokenProvider: config.tokenProvider,
     );
   }
 

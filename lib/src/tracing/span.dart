@@ -21,20 +21,28 @@ String _randomHex(int bytes) {
 /// generation from export means `traceparent` propagation across an HTTP
 /// call keeps working even when export is disabled or sampled out.
 class DropSpanContext {
-  DropSpanContext({String? traceId, String? spanId})
+  DropSpanContext({String? traceId, String? spanId, this.sampled = false})
     : traceId = traceId ?? _randomHex(16), // 128-bit trace ID
       spanId = spanId ?? _randomHex(8); // 64-bit span ID
 
   final String traceId;
   final String spanId;
 
+  /// The W3C `sampled` flag: whether this trace is being recorded. Carried
+  /// on the context so `traceparent` tells the backend the decision that
+  /// was actually made, rather than a hard-coded "yes" that overrides the
+  /// backend's own sample rate.
+  final bool sampled;
+
   /// W3C Trace Context `traceparent` header value.
   /// https://www.w3.org/TR/trace-context/
-  String toTraceparent({bool sampled = false}) =>
-      '00-$traceId-$spanId-${sampled ? '01' : '00'}';
+  ///
+  /// [sampled] overrides this context's own [DropSpanContext.sampled] flag.
+  String toTraceparent({bool? sampled}) =>
+      '00-$traceId-$spanId-${(sampled ?? this.sampled) ? '01' : '00'}';
 
   static final _traceparentPattern = RegExp(
-    r'^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$',
+    r'^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$',
   );
 
   /// Parses an incoming `traceparent` header. Returns null if it isn't
@@ -44,7 +52,12 @@ class DropSpanContext {
     if (header == null) return null;
     final match = _traceparentPattern.firstMatch(header);
     if (match == null) return null;
-    return DropSpanContext(traceId: match.group(1), spanId: match.group(2));
+    final flags = int.parse(match.group(3)!, radix: 16);
+    return DropSpanContext(
+      traceId: match.group(1),
+      spanId: match.group(2),
+      sampled: flags & 0x01 == 0x01,
+    );
   }
 }
 
@@ -59,7 +72,13 @@ class DropSpan {
     this.name, {
     DropSpanContext? parentContext,
     Map<String, Object?>? attributes,
-  }) : context = DropSpanContext(traceId: parentContext?.traceId),
+  }) : context = DropSpanContext(
+         traceId: parentContext?.traceId,
+         // A local span records nothing, so it has no decision of its own:
+         // it inherits its parent's, and a root keeps the pre-1.1 "sampled"
+         // so a backend that follows the client's flag still traces it.
+         sampled: parentContext?.sampled ?? true,
+       ),
        attributes = {} {
     if (attributes != null) {
       attributes.forEach(setAttribute);

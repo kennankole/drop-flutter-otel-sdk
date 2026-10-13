@@ -57,6 +57,13 @@ class DropSpanProcessor implements sdk.SpanProcessor {
   @override
   void onEnd(sdk.ReadOnlySpan span) {
     if (_isShutdown) return;
+    // This SDK version builds a full, recording span even when the sampler
+    // said drop — the decision only reaches the trace flags. Honour it here,
+    // or every span exports whatever the sample rate says.
+    if (span.spanContext.traceFlags & api.TraceFlags.sampled !=
+        api.TraceFlags.sampled) {
+      return;
+    }
     if (_buffer.length >= _config.maxQueueSize) {
       _buffer.removeAt(0);
     }

@@ -93,7 +93,34 @@ span count.
 `CollectorExporter` with a custom `http.Client` that re-fetches the auth token on every
 single request rather than caching it at construction, so a token refresh mid-flight is
 picked up on the very next export. A 401 response isn't in the SDK's own retry list
-(`429/502/503/504`), so it's already logged and dropped rather than retried in a loop.
+(`429/502/503/504`), so the SDK logs it and drops the batch. Until 1.1 that lost every
+span recorded while signed out or across an expired token; now the client holds a
+401'd batch (bounded, oldest dropped first) with the token it was sent under, and
+replays it on the first export that has a different, non-empty token. Each batch gets
+a fixed number of replays, so a token the proxy keeps refusing cannot pin spans in
+memory.
+
+## Sampling: a ratio sampler, and the processor enforces it
+
+`opentelemetry` 0.18.11 ships no ratio sampler, so `traceSampleRate` was ignored and
+every span exported. `tracer.dart` now wraps a trace-ID ratio sampler in
+`ParentBasedSampler`. The rule is the Go SDK's `TraceIDRatioBased` (lower 8 bytes of
+the trace ID, shifted right one bit, below `rate * 2^63`), so the backend reaches the
+same verdict for the same trace.
+
+Two things the SDK does not do on its own:
+
+- **It still records a dropped span.** The sampler's decision only reaches the trace
+  flags; the span is built, ended and handed to every processor regardless.
+  `DropSpanProcessor.onEnd` therefore skips spans without the sampled flag.
+- **`traceparent` used to say "sampled" unconditionally**, which overrode the
+  backend's own rate for every mobile request. The header now carries the span's real
+  decision while client tracing is on. While it is off the flag stays `01`: the client
+  made no decision, and an app with no gates (rate 0) must not switch off backend
+  tracing for its requests.
+
+Both gates are read per span (`GatedDropTracing`), not once at `init()`: apps back
+them with remote config, which has rarely finished fetching by then.
 
 The facade's OTEL-SDK-import boundary therefore covers three files —
 `lib/src/tracing/tracer.dart`, `lib/src/export/export_policy.dart`,

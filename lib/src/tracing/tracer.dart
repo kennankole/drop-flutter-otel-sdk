@@ -3,6 +3,7 @@ import 'package:opentelemetry/sdk.dart' as sdk;
 
 import '../export/export_policy.dart';
 import '../export/otlp_client.dart';
+import 'sampling.dart';
 import 'span.dart';
 
 /// Package-owned tracing facade — no OTEL SDK type appears in this
@@ -63,11 +64,12 @@ class NoopDropTracing implements DropTracing {
 /// instances (design principle 6: DI-friendly, static-free) stay fully
 /// independent instead of silently overwriting each other's global state.
 ///
-/// Sampling is `ParentBasedSampler(AlwaysOnSampler())` — the SDK's own
-/// default — for every span. The SDK ships no ratio-based sampler, so
-/// honoring `gates.traceSampleRate` would need a custom [sdk.Sampler]
-/// implementation; not built, since sampling everything is the safer
-/// default and volume is already bounded by [ExportPolicyConfig].
+/// Sampling is `ParentBasedSampler(_TraceIdRatioSampler(sampleRate))`: a
+/// root span is kept at [sampleRate] (read per span, so a remote-config
+/// change applies without a restart), and a span with a parent follows the
+/// parent's decision. The decision rides out on [DropSpanContext.sampled],
+/// so the `traceparent` sent to the backend matches what was exported.
+/// Omitting [sampleRate] keeps everything (the pre-1.1 behaviour).
 ///
 /// Export queueing/batching is [DropSpanProcessor] (L5), not the SDK's
 /// own [sdk.BatchSpanProcessor] — see that class's doc for why. Auth is
@@ -79,7 +81,11 @@ class RealDropTracing implements DropTracing {
     required Map<String, String> resourceAttributes,
     Future<String?> Function()? tokenProvider,
     ExportPolicyConfig exportPolicy = const ExportPolicyConfig(),
+    double Function()? sampleRate,
   }) : _provider = sdk.TracerProviderBase(
+         sampler: sdk.ParentBasedSampler(
+           _TraceIdRatioSampler(sampleRate ?? () => 1.0),
+         ),
          resource: sdk.Resource([
            for (final entry in resourceAttributes.entries)
              api.Attribute.fromString(entry.key, entry.value),
@@ -123,7 +129,9 @@ class RealDropTracing implements DropTracing {
               api.SpanContext.remote(
                 api.TraceId.fromString(parentContext.traceId),
                 api.SpanId.fromString(parentContext.spanId),
-                api.TraceFlags.sampled,
+                parentContext.sampled
+                    ? api.TraceFlags.sampled
+                    : api.TraceFlags.none,
                 api.TraceState.empty(),
               ),
             ),
@@ -137,6 +145,9 @@ class RealDropTracing implements DropTracing {
       DropSpanContext(
         traceId: sdkSpan.spanContext.traceId.toString(),
         spanId: sdkSpan.spanContext.spanId.toString(),
+        sampled:
+            sdkSpan.spanContext.traceFlags & api.TraceFlags.sampled ==
+            api.TraceFlags.sampled,
       ),
       attributes: attributes,
     );
@@ -165,4 +176,33 @@ api.Attribute _toApiAttribute(String key, Object? value) {
   if (value is double) return api.Attribute.fromDouble(key, value);
   if (value is bool) return api.Attribute.fromBoolean(key, value);
   return api.Attribute.fromString(key, '$value');
+}
+
+/// Keeps a root span when its trace ID falls inside the current rate — see
+/// [isTraceIdSampled]. The rate is a callback, read on every decision, so
+/// the app's remote config can move it mid-session.
+class _TraceIdRatioSampler implements sdk.Sampler {
+  _TraceIdRatioSampler(this._rate);
+
+  final double Function() _rate;
+
+  @override
+  String get description => 'TraceIdRatioBased{${_rate()}}';
+
+  @override
+  sdk.SamplingResult shouldSample(
+    api.Context context,
+    api.TraceId traceId,
+    String spanName,
+    api.SpanKind spanKind,
+    List<api.Attribute> spanAttributes,
+    List<api.SpanLink> spanLinks,
+  ) {
+    final keep = isTraceIdSampled(traceId.toString(), _rate());
+    return sdk.SamplingResult(
+      keep ? sdk.Decision.recordAndSample : sdk.Decision.drop,
+      spanAttributes,
+      api.spanContextFromContext(context).traceState,
+    );
+  }
 }

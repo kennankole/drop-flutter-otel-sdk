@@ -13,6 +13,14 @@ import '../tracing/tracer.dart';
 /// and a `traceparent` header carrying that span's (SDK-authoritative, see
 /// tracer.dart) trace/span IDs — so distributed tracing keeps working even
 /// when nothing is actually exported.
+///
+/// The header's `sampled` flag is the span's own decision. While client
+/// tracing is on that is the sampler's verdict, so the backend — which
+/// follows the client's flag — records the same share of mobile traces the
+/// app does, instead of every one. While tracing is off the flag stays
+/// `01`, as before 1.1: the client has made no decision, and an app with no
+/// gates wired (rate 0) must not switch off backend tracing for its
+/// requests.
 class DropDioInterceptor extends Interceptor {
   DropDioInterceptor(this._tracing);
 
@@ -29,7 +37,7 @@ class DropDioInterceptor extends Interceptor {
     );
 
     options.extra[_spanExtraKey] = span;
-    options.headers['traceparent'] = span.context.toTraceparent(sampled: true);
+    options.headers[traceparentHeader] = span.context.toTraceparent();
 
     handler.next(options);
   }
@@ -58,6 +66,28 @@ class DropDioInterceptor extends Interceptor {
     }
     handler.next(err);
   }
+}
+
+const traceparentHeader = 'traceparent';
+
+/// The trace ID of the request behind [options] / [response].
+///
+/// Prefers the `traceparent` the backend echoes on the response —
+/// authoritative even if the server started its own trace — and falls back
+/// to the one [DropDioInterceptor] sent, which still names the trace when no
+/// response arrived at all. Null when neither is a well-formed header.
+String? traceIdOfRequest(
+  RequestOptions options, [
+  Response<dynamic>? response,
+]) {
+  final echoed = DropSpanContext.fromTraceparent(
+    response?.headers.value(traceparentHeader),
+  );
+  final sentHeader = options.headers[traceparentHeader];
+  final sent = DropSpanContext.fromTraceparent(
+    sentHeader is String ? sentHeader : null,
+  );
+  return (echoed ?? sent)?.traceId;
 }
 
 final _idSegmentPattern = RegExp(
