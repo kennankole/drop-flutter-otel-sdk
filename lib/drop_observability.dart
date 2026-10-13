@@ -6,6 +6,7 @@
 library;
 
 export 'src/config.dart';
+export 'src/errors/api_error.dart';
 export 'src/errors/crash_reporter.dart';
 export 'src/errors/noise_filter.dart';
 export 'src/errors/sentry_crash_reporter.dart';
@@ -15,5 +16,7 @@ export 'src/logging/logger.dart';
 export 'src/logging/ring_buffer.dart';
 export 'src/network/dio_interceptor.dart';
 export 'src/observability.dart';
+export 'src/tracing/gated_tracing.dart';
+export 'src/tracing/sampling.dart';
 export 'src/tracing/span.dart';
 export 'src/tracing/tracer.dart';

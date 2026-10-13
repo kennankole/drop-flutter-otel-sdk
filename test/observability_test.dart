@@ -147,8 +147,28 @@ void main() {
         ),
       );
 
-      expect(obs.tracing, isA<RealDropTracing>());
+      // Gated per span (L3), so the real tracer starts on first use.
+      final tracing = obs.tracing as GatedDropTracing;
+      expect(tracing.isRealTracingStarted, isFalse);
+      tracing.startSpan('checkout').end();
+      expect(tracing.isRealTracingStarted, isTrue);
     });
+
+    test(
+      'no otlpEndpoint: tracing stays Noop whatever the gates say',
+      () async {
+        final obs = await DropObservability.init(
+          const ObservabilityConfig(
+            serviceName: 'drop-mobile',
+            environment: 'production',
+            serviceVersion: '1.0.0',
+            gates: _EnabledGates(),
+          ),
+        );
+
+        expect(obs.tracing, isA<NoopDropTracing>());
+      },
+    );
 
     // L5 acceptance criterion: "flush on pause" — the observer is
     // registered unconditionally (FlushOnPauseObserver's own no-throw

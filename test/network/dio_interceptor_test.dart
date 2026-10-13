@@ -136,6 +136,78 @@ void main() {
       expect(capturedSpan!.status, DropSpanStatus.error);
     });
   });
+  group('sampled flag on the wire', () {
+    // K2: the header used to say "sampled" unconditionally, overriding the
+    // backend's own rate.
+    test('carries the span decision from the tracer', () async {
+      final dio = Dio(BaseOptions(baseUrl: 'https://example.test'))
+        ..httpClientAdapter = _FakeAdapter()
+        ..interceptors.add(
+          DropDioInterceptor(
+            RealDropTracing(
+              otlpEndpoint: 'http://127.0.0.1:1/v1/traces',
+              resourceAttributes: const {'service.name': 'test'},
+              sampleRate: () => 0,
+            ),
+          ),
+        );
+
+      final response = await dio.get<void>('/orders');
+
+      expect(
+        response.requestOptions.headers['traceparent'] as String,
+        endsWith('-00'),
+      );
+    });
+
+    test('stays sampled when tracing is off (Noop)', () async {
+      final dio = Dio(BaseOptions(baseUrl: 'https://example.test'))
+        ..httpClientAdapter = _FakeAdapter()
+        ..interceptors.add(DropDioInterceptor(const NoopDropTracing()));
+
+      final response = await dio.get<void>('/orders');
+
+      expect(
+        response.requestOptions.headers['traceparent'] as String,
+        endsWith('-01'),
+      );
+    });
+  });
+
+  group('traceIdOfRequest', () {
+    const sent = '4bf92f3577b34da6a3ce929d0e0e4736';
+    const echoed = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    final options = RequestOptions(
+      path: '/orders',
+      headers: {'traceparent': '00-$sent-00f067aa0ba902b7-01'},
+    );
+
+    Response<dynamic> responseWith(String? traceparent) => Response<dynamic>(
+      requestOptions: options,
+      headers: Headers.fromMap({
+        if (traceparent != null) 'traceparent': [traceparent],
+      }),
+    );
+
+    test('prefers the echoed header', () {
+      expect(
+        traceIdOfRequest(
+          options,
+          responseWith('00-$echoed-bbbbbbbbbbbbbbbb-01'),
+        ),
+        echoed,
+      );
+    });
+
+    test('falls back to the sent header', () {
+      expect(traceIdOfRequest(options), sent);
+      expect(traceIdOfRequest(options, responseWith('garbage')), sent);
+    });
+
+    test('is null when neither side has one', () {
+      expect(traceIdOfRequest(RequestOptions(path: '/x')), isNull);
+    });
+  });
 }
 
 /// A [DropTracing] that behaves like [NoopDropTracing] but reports the

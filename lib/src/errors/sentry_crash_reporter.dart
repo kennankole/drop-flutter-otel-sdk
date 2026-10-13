@@ -1,8 +1,10 @@
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
 import '../logging/ring_buffer.dart';
 import '../tracing/tracer.dart';
+import 'api_error.dart';
 import 'crash_reporter.dart';
 
 /// Real backend for [CrashReporter]. Constructed only when
@@ -48,6 +50,39 @@ class SentryCrashReporter implements CrashReporter {
   Future<void> setUserId(String userId) async {
     await Sentry.configureScope(
       (scope) => scope.setUser(SentryUser(id: userId)),
+    );
+  }
+
+  @override
+  Future<void> clearUser() async {
+    await Sentry.configureScope((scope) => scope.setUser(null));
+  }
+
+  @override
+  Future<void> recordApiError(DioException error) async {
+    final failure = ApiRequestFailure.fromDio(error);
+    await Sentry.captureException(
+      failure,
+      stackTrace: error.stackTrace,
+      withScope: (scope) async {
+        await _enrich(scope, fatal: false);
+        scope
+          ..fingerprint = failure.fingerprint
+          ..level = SentryLevel.warning;
+        // Overrides the active-span tag _enrich may have set: the request's
+        // own trace is the one this event is about.
+        // The active span's ID belongs to some other operation; drop it
+        // rather than pair it with this trace.
+        final traceId = failure.traceId;
+        if (traceId != null) {
+          await scope.setTag('otel.trace_id', traceId);
+          await scope.removeTag('otel.span_id');
+        }
+        await scope.setTag('http.method', failure.method);
+        await scope.setTag('http.route', failure.route);
+        final status = failure.statusCode;
+        if (status != null) await scope.setTag('http.status_code', '$status');
+      },
     );
   }
 

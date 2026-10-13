@@ -23,8 +23,12 @@ class _CapturingExporter implements sdk.SpanExporter {
 /// Builds real, valid [sdk.ReadOnlySpan]s without attaching any real
 /// exporter — a bare [sdk.TracerProviderBase] with no processors is a
 /// pure span factory for these tests.
-sdk.ReadOnlySpan _span(String name) {
-  final provider = sdk.TracerProviderBase();
+sdk.ReadOnlySpan _span(String name, {bool sampled = true}) {
+  final provider = sdk.TracerProviderBase(
+    sampler: sampled
+        ? const sdk.AlwaysOnSampler()
+        : const sdk.AlwaysOffSampler(),
+  );
   final span = provider.getTracer('test').startSpan(name);
   span.end();
   return span as sdk.ReadOnlySpan;
@@ -127,5 +131,22 @@ void main() {
       processor.onEnd(_span('span-1')); // must be ignored, not queued
       expect(processor.queueLength, 0);
     });
+  });
+
+  // L1: this SDK version still builds and ends a full span when the sampler
+  // drops it, so the processor is where the decision has to be honoured.
+  test('DropSpanProcessor never buffers a span the sampler dropped', () {
+    final exporter = _CapturingExporter();
+    final processor = DropSpanProcessor(
+      exporter,
+      const ExportPolicyConfig(scheduledDelay: Duration(days: 1)),
+    );
+
+    processor.onEnd(_span('dropped', sampled: false));
+    processor.onEnd(_span('kept'));
+    processor.forceFlush();
+
+    expect(exporter.exportedNames, ['kept']);
+    processor.shutdown();
   });
 }

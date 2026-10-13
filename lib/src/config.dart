@@ -2,10 +2,14 @@
 /// backed by remote config) so the package never depends on a specific
 /// config provider — design principle 3, no Firebase dependency.
 abstract class ObservabilityGates {
-  /// Master kill switch.
+  /// Master kill switch. Read on every span, not once at `init()`, so a
+  /// value that changes mid-session (a late remote-config fetch) applies
+  /// straight away — implement it as a live getter, not a snapshot.
   bool get otelEnabled;
 
-  /// 0.0–1.0. Only consulted when [otelEnabled] is true.
+  /// 0.0–1.0: the share of root traces kept. Only consulted when
+  /// [otelEnabled] is true; read per span, like [otelEnabled]. Child spans
+  /// follow their parent's decision.
   double get traceSampleRate;
 
   /// Independent of [traceSampleRate] — logs stay off by default even when

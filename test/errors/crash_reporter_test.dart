@@ -1,3 +1,4 @@
+import 'package:dio/dio.dart';
 import 'package:drop_observability/drop_observability.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,16 @@ void main() {
     test('setUserId and log never throw', () async {
       await expectLater(reporter.setUserId('user-123'), completes);
       await expectLater(reporter.log('hello'), completes);
+    });
+
+    test('clearUser and recordApiError never throw', () async {
+      await expectLater(reporter.clearUser(), completes);
+      await expectLater(
+        reporter.recordApiError(
+          DioException(requestOptions: RequestOptions(path: '/x')),
+        ),
+        completes,
+      );
     });
   });
 }
