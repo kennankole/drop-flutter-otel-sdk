@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Entries below are added by `scripts/release.sh` — see that script or
 `make release` to cut a release.
 
+## [1.0.2] — 2026-10-13
+
+### Features
+
+- filling observability gaps
 ## [1.0.1] — 2026-07-12
 
 ### Features
